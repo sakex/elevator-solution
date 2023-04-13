@@ -160,7 +160,8 @@ impl Building {
         let variance: i64 = self
             .elapsed_times_per_passenger
             .iter()
-            .map(|&x| (x - average).pow(2)).sum::<i64>()
+            .map(|&x| (x - average).pow(2))
+            .sum::<i64>()
             / self.elapsed_times_per_passenger.len() as i64;
         println!("DISTRIBUTION {} +- {}", average, (variance as f64).sqrt());
     }
