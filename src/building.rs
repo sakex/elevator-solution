@@ -14,6 +14,16 @@ pub enum Direction {
 #[derive(Debug)]
 struct Passenger {
     destination: FloorId,
+    arrived_at: std::time::Instant,
+}
+
+impl Passenger {
+    fn new(destination: FloorId) -> Self {
+        Self {
+            destination,
+            arrived_at: std::time::Instant::now(),
+        }
+    }
 }
 
 /// FloorId identifies a floor. These are zero-based integers.
@@ -81,10 +91,11 @@ pub enum DriverCommand {
 }
 
 /// Building manages the current status of the building.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Building {
     floors: Vec<Floor>,
     elevators: Vec<Elevator>,
+    elapsed_times_per_passenger: Vec<i64>,
 }
 
 impl Building {
@@ -97,7 +108,11 @@ impl Building {
         for _ in 0..num_elevators {
             elevators.push(Elevator::default());
         }
-        Self { floors, elevators }
+        Self {
+            floors,
+            elevators,
+            ..Default::default()
+        }
     }
 
     /// Start the building. The resulting channels are used to communicate
@@ -134,12 +149,20 @@ impl Building {
                         DriverCommand::PassengerArrived{at, destination} => {
                             self.new_passenger(&events_tx, at, destination).await;
                         }
-                        DriverCommand::Halt => return,
+                        DriverCommand::Halt => break,
                     }
                 }
                 _ = ticker.tick() => self.move_elevators(&events_tx).await
             }
         }
+        let average: i64 = self.elapsed_times_per_passenger.iter().sum::<i64>()
+            / self.elapsed_times_per_passenger.len() as i64;
+        let variance: i64 = self
+            .elapsed_times_per_passenger
+            .iter()
+            .map(|&x| (x - average).pow(2)).sum::<i64>()
+            / self.elapsed_times_per_passenger.len() as i64;
+        println!("DISTRIBUTION {} +- {}", average, (variance as f64).sqrt());
     }
 
     /// Move the elevators toward their destinations.
@@ -191,7 +214,7 @@ impl Building {
             return;
         }
 
-        self.floors[at].passengers.push(Passenger { destination });
+        self.floors[at].passengers.push(Passenger::new(destination));
         let dir = if at < destination {
             Direction::Up
         } else {
@@ -217,6 +240,9 @@ impl Building {
             .drain(..)
             .partition(|px| px.destination == fl);
         for px in this_floor {
+            let now = std::time::Instant::now();
+            let elapsed = (now - px.arrived_at).as_millis();
+            self.elapsed_times_per_passenger.push(elapsed as i64);
             events_tx
                 .send(BuildingEvent::PassengerDelivered(px.destination))
                 .unwrap();
