@@ -12,6 +12,7 @@ use tokio::sync::{broadcast, mpsc};
 #[derive(Default, Clone)]
 struct ElevatorButtonsInfo {
     position: FloorId,
+    passenger_count: usize,
     should_visit: BTreeSet<FloorId>,
     direction: Option<Direction>,
 }
@@ -124,8 +125,47 @@ async fn process_waiting_list(
     }
 }
 
+fn print_state(
+    floors_count: usize,
+    should_visit_by_elevator: &[ElevatorButtonsInfo],
+    call_button_pressed_by_floor: &HashSet<(FloorId, Direction)>,
+) {
+    let mut print_matrix: Vec<Vec<bool>> =
+        vec![vec![false; should_visit_by_elevator.len()]; floors_count];
+    let called_floors: HashSet<FloorId> = call_button_pressed_by_floor
+        .iter()
+        .map(|(floor, _)| *floor)
+        .collect();
+    for (id, elevator) in should_visit_by_elevator.iter().enumerate() {
+        print_matrix[elevator.position][id] = true;
+    }
+
+    let to_print = print_matrix
+        .into_iter()
+        .enumerate()
+        .rev()
+        .map(|(floor_level, floor)| {
+            let button_press = if called_floors.contains(&floor_level) {
+                "| . |"
+            } else {
+                "|   |"
+            }
+            .to_owned();
+            button_press
+                + &floor
+                    .into_iter()
+                    .map(|has_elevator| if has_elevator { " X " } else { "   " })
+                    .collect::<Vec<_>>()
+                    .join("|")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    println!("{}", to_print);
+}
+
 pub async fn controller(
     elevator_count: usize,
+    floors_count: usize,
     mut events_rx: broadcast::Receiver<BuildingEvent>,
     building_cmd_tx: mpsc::Sender<BuildingCommand>,
 ) {
@@ -152,6 +192,7 @@ pub async fn controller(
             BuildingEvent::FloorButtonPressed(elevator_id, destination) => {
                 let elevator = should_visit_by_elevator.get_mut(elevator_id).unwrap();
                 elevator.should_visit.insert(destination);
+                elevator.passenger_count += 1;
                 let elevator = should_visit_by_elevator.get_mut(elevator_id).unwrap();
                 if elevator.next_step().is_none() {
                     elevator.swap_direction();
@@ -182,5 +223,10 @@ pub async fn controller(
             &building_cmd_tx,
         )
         .await;
+        print_state(
+            floors_count,
+            &should_visit_by_elevator,
+            &call_button_pressed_by_floor,
+        );
     }
 }

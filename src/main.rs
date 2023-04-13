@@ -15,12 +15,13 @@ async fn main() {
     tokio::spawn(print_events(events_rx.resubscribe()));
     let driver_handle = tokio::spawn(driver::driver(
         num_floors,
-        100,
+        1000,
         events_rx.resubscribe(),
         driver_cmd_tx,
     ));
     tokio::spawn(controller::controller(
         num_elevators,
+        num_floors,
         events_rx,
         building_cmd_tx,
     ));
