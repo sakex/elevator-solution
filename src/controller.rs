@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::building::{BuildingCommand, BuildingEvent, Direction, ElevatorId, FloorId};
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-
 #[derive(Default)]
 struct ElevatorButtonsInfo {
     position: FloorId,
@@ -35,7 +35,12 @@ impl ElevatorButtonsInfo {
         let direction = self.direction?;
         match direction {
             Direction::Up => self.should_visit.range(self.position..).next().copied(),
-            Direction::Down => self.should_visit.range(0..self.position).rev().next().copied(),
+            Direction::Down => self
+                .should_visit
+                .range(0..=self.position)
+                .rev()
+                .next()
+                .copied(),
         }
     }
 
@@ -94,7 +99,13 @@ async fn process_waiting_list(
         if let Some(elevator_id) =
             find_best_elevator_match(floor, direction, should_visit_by_elevator)
         {
+            waiters_to_remove.push((floor, direction));
+
             let elevator_info = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
+            // Don't stop the elevator suddenly at the current floor if it is moving.
+            if floor == elevator_info.position && !elevator_info.is_idle() {
+                continue;
+            }
             elevator_info.should_visit.insert(floor);
             if elevator_info.next_step().is_none() {
                 elevator_info.swap_direction();
@@ -106,7 +117,6 @@ async fn process_waiting_list(
                 ))
                 .await
                 .unwrap();
-            waiters_to_remove.push((floor, direction));
         }
     }
     for (floor, direction) in waiters_to_remove {
@@ -125,67 +135,54 @@ pub async fn controller(
         .collect();
     let mut call_button_pressed_by_floor: HashSet<(FloorId, Direction)> = HashSet::new();
 
+    let sender = Arc::new(building_cmd_tx.clone());
+    let send_go_to_floor = |elevator_id: ElevatorId, to: FloorId| {
+        let sender = sender.clone();
+        async move {
+            sender
+                .send(BuildingCommand::GoToFloor(elevator_id.clone(), to))
+                .await
+                .unwrap();
+        }
+    };
+
     while let Ok(evt) = events_rx.recv().await {
         match evt {
             BuildingEvent::CallButtonPressed(at, direction) => {
                 call_button_pressed_by_floor.insert((at, direction));
-                process_waiting_list(
-                    &mut should_visit_by_elevator,
-                    &mut call_button_pressed_by_floor,
-                    &building_cmd_tx,
-                )
-                .await;
             }
             BuildingEvent::FloorButtonPressed(elevator_id, destination) => {
                 let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
                 elevator.should_visit.insert(destination);
-
-                process_waiting_list(
-                    &mut should_visit_by_elevator,
-                    &mut call_button_pressed_by_floor,
-                    &building_cmd_tx,
-                )
-                .await;
                 let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
                 if elevator.next_step().is_none() {
                     elevator.swap_direction();
                 }
-                building_cmd_tx
-                    .send(BuildingCommand::GoToFloor(
-                        elevator_id,
-                        elevator.next_step().unwrap(),
-                    ))
-                    .await
-                    .unwrap();
+                send_go_to_floor(elevator_id, elevator.next_step().unwrap()).await;
             }
             BuildingEvent::AtFloor(elevator_id, floor) => {
                 let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
                 elevator.should_visit.remove(&floor);
                 elevator.position = floor;
-                process_waiting_list(
-                    &mut should_visit_by_elevator,
-                    &mut call_button_pressed_by_floor,
-                    &building_cmd_tx,
-                )
-                .await;
 
-                let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
                 if elevator.next_step().is_none() && !elevator.is_idle() {
                     elevator.swap_direction();
                 }
+
+                let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
                 if !elevator.is_idle() {
-                    building_cmd_tx
-                        .send(BuildingCommand::GoToFloor(
-                            elevator_id,
-                            elevator.next_step().unwrap(),
-                        ))
-                        .await
-                        .unwrap();
+                    send_go_to_floor(elevator_id, elevator.next_step().unwrap()).await;
                 } else {
                     elevator.direction = None;
                 }
             }
             _ => {}
         }
+        process_waiting_list(
+            &mut should_visit_by_elevator,
+            &mut call_button_pressed_by_floor,
+            &building_cmd_tx,
+        )
+        .await;
     }
 }
