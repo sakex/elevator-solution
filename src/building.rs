@@ -194,7 +194,7 @@ impl Building {
                 if elevator.position == dest {
                     elevator.destination = None;
                     elevator.doors_open = true;
-                    self.exchange_passengers(&events_tx, el).await;
+                    self.exchange_passengers(events_tx, el).await;
                 }
             }
         }

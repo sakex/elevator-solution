@@ -2,14 +2,14 @@
 //! get to their destinations.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashSet},
     ops::Range,
 };
 
 use crate::building::{BuildingCommand, BuildingEvent, Direction, ElevatorId, FloorId};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ElevatorButtonsInfo {
     position: FloorId,
     should_visit: BTreeSet<FloorId>,
@@ -70,11 +70,11 @@ impl ElevatorButtonsInfo {
 fn find_best_elevator_match(
     floor: FloorId,
     direction: Direction,
-    should_visit_by_elevator: &HashMap<ElevatorId, ElevatorButtonsInfo>,
+    should_visit_by_elevator: &[ElevatorButtonsInfo],
 ) -> Option<ElevatorId> {
     let mut lowest_distance = std::i32::MAX;
     let mut result = None;
-    for (id, elevator) in should_visit_by_elevator {
+    for (id, elevator) in should_visit_by_elevator.iter().enumerate() {
         if elevator.is_idle()
             || (elevator.current_trip().unwrap().contains(&floor)
                 && elevator.direction.unwrap() == direction)
@@ -82,7 +82,7 @@ fn find_best_elevator_match(
             let distance = elevator.distance_to(floor);
             if distance < lowest_distance {
                 lowest_distance = distance;
-                result = Some(*id);
+                result = Some(id);
             }
         }
     }
@@ -90,7 +90,7 @@ fn find_best_elevator_match(
 }
 
 async fn process_waiting_list(
-    should_visit_by_elevator: &mut HashMap<ElevatorId, ElevatorButtonsInfo>,
+    should_visit_by_elevator: &mut [ElevatorButtonsInfo],
     call_button_pressed_by_floor: &mut HashSet<(FloorId, Direction)>,
     building_cmd_tx: &mpsc::Sender<BuildingCommand>,
 ) {
@@ -101,7 +101,7 @@ async fn process_waiting_list(
         {
             waiters_to_remove.push((floor, direction));
 
-            let elevator_info = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
+            let elevator_info = should_visit_by_elevator.get_mut(elevator_id).unwrap();
             // Don't stop the elevator suddenly at the current floor if it is moving.
             if floor == elevator_info.position && !elevator_info.is_idle() {
                 continue;
@@ -129,10 +129,8 @@ pub async fn controller(
     mut events_rx: broadcast::Receiver<BuildingEvent>,
     building_cmd_tx: mpsc::Sender<BuildingCommand>,
 ) {
-    let mut should_visit_by_elevator: HashMap<ElevatorId, ElevatorButtonsInfo> = (0
-        ..elevator_count)
-        .map(|id| (id, ElevatorButtonsInfo::default()))
-        .collect();
+    let mut should_visit_by_elevator: Vec<ElevatorButtonsInfo> =
+        vec![ElevatorButtonsInfo::default(); elevator_count];
     let mut call_button_pressed_by_floor: HashSet<(FloorId, Direction)> = HashSet::new();
 
     let sender = Arc::new(building_cmd_tx.clone());
@@ -140,7 +138,7 @@ pub async fn controller(
         let sender = sender.clone();
         async move {
             sender
-                .send(BuildingCommand::GoToFloor(elevator_id.clone(), to))
+                .send(BuildingCommand::GoToFloor(elevator_id, to))
                 .await
                 .unwrap();
         }
@@ -152,16 +150,16 @@ pub async fn controller(
                 call_button_pressed_by_floor.insert((at, direction));
             }
             BuildingEvent::FloorButtonPressed(elevator_id, destination) => {
-                let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
+                let elevator = should_visit_by_elevator.get_mut(elevator_id).unwrap();
                 elevator.should_visit.insert(destination);
-                let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
+                let elevator = should_visit_by_elevator.get_mut(elevator_id).unwrap();
                 if elevator.next_step().is_none() {
                     elevator.swap_direction();
                 }
                 send_go_to_floor(elevator_id, elevator.next_step().unwrap()).await;
             }
             BuildingEvent::AtFloor(elevator_id, floor) => {
-                let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
+                let elevator = should_visit_by_elevator.get_mut(elevator_id).unwrap();
                 elevator.should_visit.remove(&floor);
                 elevator.position = floor;
 
@@ -169,7 +167,7 @@ pub async fn controller(
                     elevator.swap_direction();
                 }
 
-                let elevator = should_visit_by_elevator.get_mut(&elevator_id).unwrap();
+                let elevator = should_visit_by_elevator.get_mut(elevator_id).unwrap();
                 if !elevator.is_idle() {
                     send_go_to_floor(elevator_id, elevator.next_step().unwrap()).await;
                 } else {

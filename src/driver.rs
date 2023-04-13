@@ -1,6 +1,6 @@
 //! The driver controls when and where passengers arrive.
 
-use crate::building::{Building, BuildingEvent, DriverCommand, FloorId};
+use crate::building::{Building, BuildingEvent, DriverCommand};
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
 
@@ -33,7 +33,7 @@ pub async fn driver(
             tokio::time::sleep(tokio::time::Duration::from_millis(wait_time_ms)).await;
             // ----------- End solution 1 -----------
             // A passenger has arrived..
-            let send_amount = high_traffic.then_some(10).unwrap_or(1);
+            let send_amount = if high_traffic { 10 } else { 1 };
             for _ in 0..send_amount {
                 idx += 1;
                 sender

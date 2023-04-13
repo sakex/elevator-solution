@@ -25,7 +25,7 @@ async fn main() {
         building_cmd_tx,
     ));
     building_task.await.unwrap();
-    driver_handle.await;
+    driver_handle.await.unwrap();
 }
 
 async fn print_events(mut events_rx: broadcast::Receiver<BuildingEvent>) {
